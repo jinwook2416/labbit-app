@@ -9,7 +9,7 @@ import (
 )
 
 // Run은 Connector 프로세스의 최소 lifecycle만 제공한다.
-// Control WSS, Provider Adapter, SSH/PTY는 각 개발 Story에서 별도 package로 추가한다.
+// Control WSS, Provider Adapter, SSH/PTY는 각 개발 업무에서 별도 package로 추가한다.
 func Run(ctx context.Context) error {
 	environment := envOrDefault("LABBIT_ENVIRONMENT", "development")
 	logLevel := envOrDefault("LABBIT_LOG_LEVEL", "info")
