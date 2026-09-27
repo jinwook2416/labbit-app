@@ -72,7 +72,7 @@
 
 - FK, Unique, partial unique index, transaction, locking, concurrency처럼 PostgreSQL 의미에 의존하는 검증은 실제 PostgreSQL에서 수행합니다.
 - SQLite나 단순 in-memory DB를 PostgreSQL 고유 의미의 대체 검증으로 사용하지 않습니다.
-- 구체적인 테스트 환경 도구(Testcontainers, CI service 등)는 해당 Story의 구현 요구에 맞춰 선택하고 이 문서에서 선행 고정하지 않습니다.
+- 구체적인 테스트 환경 도구(Testcontainers, CI service 등)는 해당 작업의 구현 요구에 맞춰 선택하고 이 문서에서 선행 고정하지 않습니다.
 - 테스트가 생성한 DB 데이터는 다른 테스트에 영향을 주지 않도록 격리하거나 정리합니다.
 
 ## Connector Test
@@ -121,7 +121,7 @@ Provider E2E      → 실제 OpenStack
 
 ## 실패·회귀 테스트
 
-모든 오류 조합을 전부 작성할 필요는 없지만 해당 Story의 Acceptance Criteria와 관련된 대표 실패 경로는 검토합니다.
+모든 오류 조합을 전부 작성할 필요는 없지만 해당 작업의 Acceptance Criteria와 관련된 대표 실패 경로는 검토합니다.
 
 대표 예:
 
