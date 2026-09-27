@@ -22,7 +22,7 @@
 - **Connector Terminal Data v0.1 정의됨** — TerminalSession lifecycle은 persistent Control WSS로 전달하고, 실제 PTY bytes는 active TerminalSession별 별도 Connector outbound Data WSS로 중계.
 - **Domain/Data Model 확정** — Organization/User/Class/LabSpec/LabExecution/LabInstance/Operation/OperationItem/ProviderResource/TerminalSession/LiveSession의 핵심 관계와 ownership, 주요 불변조건을 확정.
 - **PostgreSQL Physical Schema Draft v0.1 작성됨** — 초기 5개 SQL Migration과 D-25의 additive `000006` 초안. 아직 실제 개발 PostgreSQL 적용·pgx Query·Migration runner·통합 검증 전이며, 최초 공용 개발 DB 적용 전까지 구현 피드백에 따라 정리할 수 있음.
-- **Auth/Session 구현 계약 v0.1 준비됨** — docs/backend/auth-session.md에서 8시간 absolute Session, fresh login token, Argon2id Password hash, raw Session token 비저장, Origin/Referer 검증 기준을 정의합니다. 실제 Handler/Repository 구현은 SL-64에서 진행합니다.
+- **Auth/Session 구현 계약 v0.1 준비됨** — docs/backend/auth-session.md에서 8시간 absolute Session, fresh login token, Argon2id Password hash, raw Session token 비저장, Origin/Referer 검증 기준을 정의합니다. 실제 Handler/Repository 구현은 LBT-10에서 추적합니다.
 - **HTTP 후속 범위** — Organization/Provider 관리, File, Preview, Terminal/Live Session 생성·종료 control API.
 - **Runtime Contract v0.1.2 정의됨** — 기존 실행 경계에 SaaS OpenTelemetry/OTLP, Operation의 durable Trace Context, Connector propagation-only, 관측 장애의 업무 격리 계약 추가. 실제 계측·전파·Tempo E2E 구현 완료는 아님.
 
@@ -39,7 +39,7 @@ Terminal/Live는 Control과 Data를 분리합니다. Browser-facing Terminal/Liv
 
 ## 개발 스켈레톤
 
-개발 시작 전 최소 실행 골격만 제공합니다. 기능 package는 Jira Story가 시작될 때 필요한 만큼 추가합니다.
+개발 시작 전 최소 실행 골격만 제공합니다. 기능 package는 Jira 업무가 시작될 때 필요한 만큼 추가합니다.
 
 ```text
 cmd/
