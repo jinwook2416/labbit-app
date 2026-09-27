@@ -76,7 +76,7 @@ MVP에서는 PostgreSQL RLS를 필수로 도입하지 않습니다. Application 
 
 ### Local Account / Session Secret
 
-- Password 원문은 저장하지 않고 local_accounts.password_hash에 Argon2id PHC 문자열을 저장합니다. SL-64 v0.1 baseline은 memory 19 MiB, iterations 2, parallelism 1이며 salt는 계정별 무작위 값입니다. 구현은 저장된 PHC parameter를 파싱해 검증하고 향후 cost 상승을 허용합니다.
+- Password 원문은 저장하지 않고 local_accounts.password_hash에 Argon2id PHC 문자열을 저장합니다. Auth/Session v0.1 baseline은 memory 19 MiB, iterations 2, parallelism 1이며 salt는 계정별 무작위 값입니다. 구현은 저장된 PHC parameter를 파싱해 검증하고 향후 cost 상승을 허용합니다.
 - Browser Session token은 CSPRNG로 생성한 32-byte random value를 opaque base64url 문자열로 사용합니다. 원문은 Cookie 전송에만 사용하고 DB에는 SHA-256 digest만 auth_sessions.token_hash에 저장합니다.
 - Browser Session의 v0.1 서버 absolute lifetime은 created_at + 8h입니다. expires_at이 이를 저장하며 활동에 따라 연장하지 않습니다. last_seen_at은 v0.1 인증 유효시간을 연장하는 기준으로 사용하지 않습니다.
 - revoked_at이 설정됐거나 expires_at이 지났거나 User가 비활성화됐거나 Session 생성 이후 Password가 변경된 경우 해당 Session은 인증에 사용할 수 없습니다.
