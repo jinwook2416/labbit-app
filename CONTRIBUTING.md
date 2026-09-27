@@ -15,10 +15,12 @@
 예:
 
 ```text
-feat/SL-123-provision-targets
-fix/SL-214-reset-conflict
-docs/SL-301-runtime-contract
+feat/LBT-123-provision-targets
+fix/LBT-214-reset-conflict
+docs/LBT-301-runtime-contract
 ```
+
+현재 실행 Jira project key는 `LBT`입니다. 과거 `SL-*` branch/commit은 이력으로 유지하고, 신규 branch/PR에는 `LBT-*`를 사용합니다.
 
 별도 Jira로 추적할 필요가 없는 **소규모 repository maintenance 또는 기존 review follow-up**은 다음 예외 형식을 사용할 수 있습니다.
 
@@ -103,7 +105,7 @@ ci
 
 - `main`에 직접 push하지 않고 PR을 사용합니다.
 - PR 제목도 Commit Convention과 같은 형식을 사용합니다.
-- 한 PR은 가능한 한 하나의 Jira Story 또는 하나의 명확한 목적에 집중합니다.
+- 한 PR은 가능한 한 하나의 Jira 업무 또는 하나의 명확한 목적에 집중합니다.
 - 관련 Jira가 있으면 PR에 연결하고, Jira가 없는 예외 작업은 PR에 그 이유를 명시합니다.
 - 계약 파일을 바꾸면 해당 producer/consumer 영향도 함께 확인합니다.
 - 생성된 코드가 있다면 생성 원본과 생성 방법을 PR에 명시합니다.
@@ -161,4 +163,4 @@ make connector
 make web
 ```
 
-현재 스켈레톤은 실제 제품 기능 구현 완료를 뜻하지 않습니다. Backend/Connector/Frontend의 각 기능 package는 Jira Story가 시작될 때 필요한 만큼 생성합니다.
+현재 스켈레톤은 실제 제품 기능 구현 완료를 뜻하지 않습니다. Backend/Connector/Frontend의 각 기능 package는 Jira 업무가 시작될 때 필요한 만큼 생성합니다.

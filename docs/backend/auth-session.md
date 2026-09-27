@@ -1,6 +1,6 @@
 # Backend Auth / Session Implementation Contract v0.1
 
-이 문서는 SL-64의 Local Account 로그인과 Browser Session 구현 전에 필요한 세부 기준을 Git에서 고정합니다.
+이 문서는 LBT-10의 Local Account 로그인과 Browser Session 구현 전에 필요한 세부 기준을 Git에서 고정합니다.
 
 상위 정책은 D-11과 기능 명세, Browser HTTP 표면은 contracts/http/openapi.yaml, Physical Schema는 db/migrations/, 환경별 public origin 입력은 runtime/contract.yaml이 원본입니다.
 
@@ -125,7 +125,7 @@ Session 인증 성공은 Resource authorization 성공을 의미하지 않습니
 
 Class/API 권한은 UI가 아니라 Application use case에서 DB 관계를 사용해 검증합니다.
 
-## SL-64 자동 테스트 최소 범위
+## LBT-10 자동 테스트 최소 범위
 
 - 정상 Password → fresh Session 발급
 - 잘못된 username/password → 동일 401, 존재하지 않는 username도 dummy Argon2id 검증 수행

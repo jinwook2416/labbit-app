@@ -14,7 +14,7 @@
             ↓
     PostgreSQL / Connector / Other Adapter
 
-package 이름과 파일 개수는 Story에 필요한 만큼만 생성합니다. 위 책임 방향을 유지한다면 handler, application, repository 같은 정확한 디렉터리 이름 자체는 계약이 아닙니다.
+package 이름과 파일 개수는 해당 작업에 필요한 만큼만 생성합니다. 위 책임 방향을 유지한다면 handler, application, repository 같은 정확한 디렉터리 이름 자체는 계약이 아닙니다.
 
 ## HTTP Handler / Middleware
 
@@ -100,7 +100,7 @@ HTTP request에 종속된 DB 조회와 짧은 처리는 request context를 사�
 
 Provision/Reset/Cleanup 같은 durable Operation은 HTTP request lifetime 이후에도 계속되어야 하므로 request cancellation을 Worker 실행 lifecycle에 그대로 전달하지 않습니다. 이 경계는 기존 Runtime/D-20/D-25 계약을 따릅니다.
 
-## SL-64 첫 Vertical Slice
+## Auth/Class 첫 Vertical Slice (LBT-10)
 
     Bootstrap test data
       → Password verify + Session repository
@@ -119,6 +119,6 @@ Session의 구체 lifecycle/CSRF 기준은 auth-session.md를 따릅니다.
 - Application rule: Repository/Port fake를 사용한 Go unit test
 - HTTP transport: httptest 기반 request/response 계약 test
 - PostgreSQL constraint/session/query: 실제 PostgreSQL Integration Test
-- Frontend 실제 consumer: SL-65에서 HTTP mode E2E
+- Frontend 실제 consumer: LBT-12에서 HTTP mode E2E
 
 테스트 원칙 전체는 ../../TESTING.md를 따릅니다.

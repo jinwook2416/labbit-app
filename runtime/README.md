@@ -8,7 +8,7 @@
 
 Runtime Contract는 HTTP/OpenAPI나 WSS 메시지 계약을 다시 정의하지 않습니다. 애플리케이션이 **어떻게 실행되고, 어떤 포트·설정·Probe·로그·종료 동작을 제공해야 하는지**와 플랫폼이 무엇을 주입·구성해야 하는지를 고정합니다.
 
-**v0.1.2 변경:** SL-64 Auth/Class 구현 준비에 따라 Browser unsafe method의 CSRF/Origin 검증에 사용할 trusted LABBIT_PUBLIC_ORIGIN 입력을 추가했습니다. v0.1.1의 SaaS OTel/OTLP, durable Context, Connector propagation-only 계약은 유지합니다. 아래 요구사항은 구현 기준이며, 기존 스켈레톤이 이미 이를 제공한다는 뜻은 아닙니다.
+**v0.1.2 변경:** LBT-10 Auth/Class 구현 준비에 따라 Browser unsafe method의 CSRF/Origin 검증에 사용할 trusted LABBIT_PUBLIC_ORIGIN 입력을 추가했습니다. v0.1.1의 SaaS OTel/OTLP, durable Context, Connector propagation-only 계약은 유지합니다. 아래 요구사항은 구현 기준이며, 기존 스켈레톤이 이미 이를 제공한다는 뜻은 아닙니다.
 
 ## v0.1에서 확정하는 경계
 
