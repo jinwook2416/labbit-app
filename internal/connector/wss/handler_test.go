@@ -1044,4 +1044,3 @@ func TestHandler_Listen_HandleMessageErrorCallbackInvoked(t *testing.T) {
 		t.Fatal("timed out waiting for onError callback in Handler.Listen")
 	}
 }
-

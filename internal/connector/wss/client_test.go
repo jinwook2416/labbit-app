@@ -303,4 +303,3 @@ func TestClient_Dial_SubprotocolNegotiationFailure(t *testing.T) {
 		t.Fatalf("expected error containing 'wss subprotocol negotiation failed', got: %v", err)
 	}
 }
-

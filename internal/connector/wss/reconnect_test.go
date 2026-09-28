@@ -307,4 +307,3 @@ func TestSupervisor_BackoffResetAfterSuccessfulConnection(t *testing.T) {
 		t.Fatalf("expected reconnected HELLO handshake, got %d", server.HelloCount())
 	}
 }
-
