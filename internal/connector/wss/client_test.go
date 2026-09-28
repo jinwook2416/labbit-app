@@ -2,11 +2,15 @@ package wss_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/ktcloud4-SL/labbit-app/internal/connector/mock"
 	"github.com/ktcloud4-SL/labbit-app/internal/connector/protocol"
 	"github.com/ktcloud4-SL/labbit-app/internal/connector/wss"
@@ -260,3 +264,43 @@ func TestClient_ConcurrentWrites(t *testing.T) {
 		}
 	}
 }
+
+// TestClient_Dial_SubprotocolNegotiationFailure 는 서버가 올바른 subprotocol(labbit.connector.v1)을
+// 협상하지 않은 경우 Dial 이 즉시 실패하는지 검증합니다 (팀장님 리뷰 5번).
+func TestClient_Dial_SubprotocolNegotiationFailure(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+		// Subprotocols 를 설정하지 않아 subprotocol 협상 미체결
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/connector/v1/control"
+	cfg := wss.Config{
+		BaseURL:       wsURL,
+		Credential:    "test-token",
+		AllowInsecure: true,
+	}
+	client := wss.NewClient(cfg)
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := client.Dial(ctx)
+	if err == nil {
+		t.Fatal("expected Dial to fail due to subprotocol negotiation mismatch, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "wss subprotocol negotiation failed") {
+		t.Fatalf("expected error containing 'wss subprotocol negotiation failed', got: %v", err)
+	}
+}
+

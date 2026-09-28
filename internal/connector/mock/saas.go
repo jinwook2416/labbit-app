@@ -146,6 +146,13 @@ func (m *MockSaaS) SendRaw(msg interface{}) error {
 	return m.conn.WriteMessage(websocket.TextMessage, bytes)
 }
 
+// SendBytes 는 모의 SaaS에서 바이트 슬라이스를 가공 없이 직접 WebSocket으로 전송합니다.
+func (m *MockSaaS) SendBytes(raw []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conn.WriteMessage(websocket.TextMessage, raw)
+}
+
 // ReceivedMessages 는 지금까지 수신된 모든 원본 메시지 사본을 반환합니다.
 func (m *MockSaaS) ReceivedMessages() [][]byte {
 	m.mu.Lock()

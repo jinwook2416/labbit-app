@@ -339,34 +339,31 @@ func TestHandler_OperationCommand_MissingCorrelation_Rejected(t *testing.T) {
 		t.Fatalf("failed to send invalid command: %v", err)
 	}
 
-	var ackMsg *protocol.OperationAckMessage
+	var protoErrMsg *protocol.ProtocolErrorMessage
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		msgs := mockSaaS.ReceivedMessages()
 		for _, m := range msgs {
 			var env protocol.BaseEnvelope
 			if err := json.Unmarshal(m, &env); err == nil {
-				if env.Type == protocol.MessageTypeOperationAck && env.ReplyToMessageID == "msg-invalid-1" {
-					var ack protocol.OperationAckMessage
-					_ = json.Unmarshal(m, &ack)
-					ackMsg = &ack
+				if env.Type == protocol.MessageTypeError && env.ReplyToMessageID == "msg-invalid-1" {
+					var protoErr protocol.ProtocolErrorMessage
+					_ = json.Unmarshal(m, &protoErr)
+					protoErrMsg = &protoErr
 				}
 			}
 		}
-		if ackMsg != nil {
+		if protoErrMsg != nil {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	if ackMsg == nil {
-		t.Fatalf("expected OPERATION_ACK for invalid command")
+	if protoErrMsg == nil {
+		t.Fatalf("expected ProtocolErrorMessage (ERROR) for missing correlation (팀장님 리뷰 2번)")
 	}
-	if ackMsg.Payload.Accepted {
-		t.Fatalf("expected OPERATION_ACK accepted to be false")
-	}
-	if ackMsg.Payload.Error == nil || ackMsg.Payload.Error.Code != "INVALID_COMMAND" {
-		t.Fatalf("expected SafeError INVALID_COMMAND, got %+v", ackMsg.Payload.Error)
+	if protoErrMsg.Payload.Code != "INVALID_MESSAGE" {
+		t.Fatalf("expected ProtocolError code INVALID_MESSAGE, got %+v", protoErrMsg.Payload)
 	}
 }
 
@@ -810,3 +807,241 @@ func TestHandler_OperationCommand_MissingCreationSnapshot_Rejected(t *testing.T)
 		t.Fatalf("expected OPERATION_ACK accepted to be false")
 	}
 }
+
+// TestHandler_OperationCommand_Cleanup_MissingProviderResources_Rejected 는
+// CLEANUP 요청에서 providerResources 필드가 누락(nil)된 경우 Provider 호출 없이 즉시 거절되는지 검증합니다 (팀장님 리뷰 1번).
+func TestHandler_OperationCommand_Cleanup_MissingProviderResources_Rejected(t *testing.T) {
+	testToken := "test-secret-token"
+	mockSaaS := mock.NewMockSaaS(testToken)
+	defer mockSaaS.Close()
+
+	cfg := wss.Config{
+		BaseURL:       mockSaaS.URL(),
+		Credential:    testToken,
+		AllowInsecure: true,
+	}
+	client := wss.NewClient(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.Dial(ctx); err != nil {
+		t.Fatalf("client.Dial failed: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.SendHello(ctx); err != nil {
+		t.Fatalf("client.SendHello failed: %v", err)
+	}
+
+	cleanupCalled := false
+	mockProv := &provider.MockProvider{
+		CleanupFunc: func(ctx context.Context, req provider.CleanupRequest) (provider.OperationResult, error) {
+			cleanupCalled = true
+			return provider.OperationResult{Outcome: provider.OutcomeSucceeded}, nil
+		},
+	}
+
+	handler := wss.NewHandler(mockProv, client)
+	go func() {
+		_ = handler.Listen(ctx, client.Conn())
+	}()
+
+	// CLEANUP 요청이지만 ProviderResources 가 nil 로 누락된 비정상 명령
+	cmdMsg := protocol.OperationCommandMessage{
+		BaseEnvelope: protocol.BaseEnvelope{
+			Type:          protocol.MessageTypeOperationCommand,
+			MessageID:     "msg-cleanup-no-resources",
+			SentAt:        time.Now().UTC(),
+			OperationID:   "op-cleanup-fail",
+			LabInstanceID: "inst-cleanup-fail",
+			Generation:    1,
+		},
+		Payload: protocol.OperationCommandPayload{
+			MutationType:      "CLEANUP",
+			ProviderResources: nil, // 누락
+		},
+	}
+
+	if err := mockSaaS.SendRaw(cmdMsg); err != nil {
+		t.Fatalf("failed to send command: %v", err)
+	}
+
+	var ackMsg *protocol.OperationAckMessage
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := mockSaaS.ReceivedMessages()
+		for _, m := range msgs {
+			var env protocol.BaseEnvelope
+			if err := json.Unmarshal(m, &env); err == nil {
+				if env.Type == protocol.MessageTypeOperationAck && env.ReplyToMessageID == "msg-cleanup-no-resources" {
+					var ack protocol.OperationAckMessage
+					_ = json.Unmarshal(m, &ack)
+					ackMsg = &ack
+				}
+			}
+		}
+		if ackMsg != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if cleanupCalled {
+		t.Fatalf("provider Cleanup must NOT be called when providerResources is missing")
+	}
+
+	if ackMsg == nil {
+		t.Fatalf("expected OPERATION_ACK to be received by SaaS")
+	}
+	if ackMsg.Payload.Accepted {
+		t.Fatalf("expected OPERATION_ACK accepted to be false")
+	}
+	if ackMsg.Payload.Error == nil || ackMsg.Payload.Error.Code != "INVALID_COMMAND" {
+		t.Fatalf("expected Error code INVALID_COMMAND, got %+v", ackMsg.Payload.Error)
+	}
+}
+
+// TestHandler_ReconcileRequest_MissingKnownResources_Rejected 는
+// RECONCILE 요청에서 knownResources 필드가 누락(nil)된 경우 INVALID_REQUEST 로 거절되는지 검증합니다 (팀장님 리뷰 3번).
+func TestHandler_ReconcileRequest_MissingKnownResources_Rejected(t *testing.T) {
+	testToken := "test-secret-token"
+	mockSaaS := mock.NewMockSaaS(testToken)
+	defer mockSaaS.Close()
+
+	cfg := wss.Config{
+		BaseURL:       mockSaaS.URL(),
+		Credential:    testToken,
+		AllowInsecure: true,
+	}
+	client := wss.NewClient(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.Dial(ctx); err != nil {
+		t.Fatalf("client.Dial failed: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.SendHello(ctx); err != nil {
+		t.Fatalf("client.SendHello failed: %v", err)
+	}
+
+	reconcileCalled := false
+	mockProv := &provider.MockProvider{
+		ReconcileFunc: func(ctx context.Context, req provider.ReconcileRequest) (provider.ReconcileResult, error) {
+			reconcileCalled = true
+			return provider.ReconcileResult{}, nil
+		},
+	}
+
+	handler := wss.NewHandler(mockProv, client)
+	go func() {
+		_ = handler.Listen(ctx, client.Conn())
+	}()
+
+	// knownResources 가 nil 로 누락된 비정상 reconcile 요청
+	reqMsg := protocol.ReconcileRequestMessage{
+		BaseEnvelope: protocol.BaseEnvelope{
+			Type:          protocol.MessageTypeReconcileRequest,
+			MessageID:     "msg-reconcile-no-known",
+			SentAt:        time.Now().UTC(),
+			OperationID:   "op-reconcile-fail",
+			LabInstanceID: "inst-reconcile-fail",
+			Generation:    1,
+		},
+		Payload: protocol.ReconcileRequestPayload{
+			KnownResources: nil, // 누락
+		},
+	}
+
+	if err := mockSaaS.SendRaw(reqMsg); err != nil {
+		t.Fatalf("failed to send reconcile request: %v", err)
+	}
+
+	var resMsg *protocol.ReconcileResultMessage
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := mockSaaS.ReceivedMessages()
+		for _, m := range msgs {
+			var env protocol.BaseEnvelope
+			if err := json.Unmarshal(m, &env); err == nil {
+				if env.Type == protocol.MessageTypeReconcileResult && env.ReplyToMessageID == "msg-reconcile-no-known" {
+					var res protocol.ReconcileResultMessage
+					_ = json.Unmarshal(m, &res)
+					resMsg = &res
+				}
+			}
+		}
+		if resMsg != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if reconcileCalled {
+		t.Fatalf("provider Reconcile must NOT be called when knownResources is missing")
+	}
+
+	if resMsg == nil {
+		t.Fatalf("expected RECONCILE_RESULT to be received by SaaS")
+	}
+	if resMsg.Payload.Error == nil || resMsg.Payload.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected Error code INVALID_REQUEST, got %+v", resMsg.Payload.Error)
+	}
+}
+
+// TestHandler_Listen_HandleMessageErrorCallbackInvoked 는
+// Listen 루프에서 HandleMessage 처리 중 발생한 에러가 onError 콜백으로 전달되는지 검증합니다 (팀장님 리뷰 6번).
+func TestHandler_Listen_HandleMessageErrorCallbackInvoked(t *testing.T) {
+	testToken := "test-secret-token"
+	mockSaaS := mock.NewMockSaaS(testToken)
+	defer mockSaaS.Close()
+
+	cfg := wss.Config{
+		BaseURL:       mockSaaS.URL(),
+		Credential:    testToken,
+		AllowInsecure: true,
+	}
+	client := wss.NewClient(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.Dial(ctx); err != nil {
+		t.Fatalf("client.Dial failed: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.SendHello(ctx); err != nil {
+		t.Fatalf("client.SendHello failed: %v", err)
+	}
+
+	mockProv := &provider.MockProvider{}
+	handler := wss.NewHandler(mockProv, client)
+
+	errCh := make(chan error, 1)
+	handler.SetOnError(func(err error) {
+		select {
+		case errCh <- err:
+		default:
+		}
+	})
+
+	go func() {
+		_ = handler.Listen(ctx, client.Conn())
+	}()
+
+	// 잘못된 JSON 전송으로 HandleMessage 에러 유발
+	if err := mockSaaS.SendBytes([]byte("invalid-raw-json-message")); err != nil {
+		t.Fatalf("failed to send raw message: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected non-nil error from HandleMessage callback")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for onError callback in Handler.Listen")
+	}
+}
+

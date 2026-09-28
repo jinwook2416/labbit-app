@@ -65,6 +65,12 @@ func (c *Client) Dial(ctx context.Context) error {
 		return fmt.Errorf("wss dial failed: %w", err)
 	}
 
+	// Subprotocol 협상 결과 검증 (labbit.connector.v1 필수)
+	if negotiated := conn.Subprotocol(); negotiated != protocol.SubprotocolControl {
+		_ = conn.Close()
+		return fmt.Errorf("wss subprotocol negotiation failed: expected %q, got %q", protocol.SubprotocolControl, negotiated)
+	}
+
 	// 1 MiB JSON 메시지 크기 상한 설정 (contracts/connector SSOT)
 	conn.SetReadLimit(c.cfg.ReadLimit)
 

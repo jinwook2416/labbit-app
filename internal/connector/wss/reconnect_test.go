@@ -64,7 +64,8 @@ func newReconnectableMockServer(t *testing.T) *ReconnectableMockServer {
 	}
 
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+		Subprotocols: []string{protocol.SubprotocolControl},
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	mux := http.NewServeMux()
@@ -247,3 +248,63 @@ func TestSupervisor_ContextCancelBeforeDial(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+// TestSupervisor_BackoffResetAfterSuccessfulConnection 은 세션이 정상 연결된 후 단절되었을 때
+// backoff 시도 횟수(attempt)가 0으로 초기화되는지 검증합니다 (팀장님 리뷰 4번).
+func TestSupervisor_BackoffResetAfterSuccessfulConnection(t *testing.T) {
+	server := newReconnectableMockServer(t)
+	defer server.Close()
+
+	cfg := wss.Config{
+		BaseURL:          server.URL(),
+		Credential:       "test-secret-token",
+		ConnectorVersion: "0.1.0-test",
+		AllowInsecure:    true,
+	}
+
+	backoff := wss.BackoffPolicy{
+		InitialInterval:     10 * time.Millisecond,
+		MaxInterval:         100 * time.Millisecond,
+		Multiplier:          2.0,
+		RandomizationFactor: 0.0,
+	}
+
+	mockProv := &provider.MockProvider{}
+	handler := wss.NewHandler(mockProv, nil)
+	supervisor := wss.NewSupervisor(cfg, handler, backoff)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() {
+		_ = supervisor.Run(ctx)
+	}()
+
+	// 1. 첫 번째 연결 및 HELLO 핸드셰이크 대기
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if server.HelloCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if server.HelloCount() < 1 {
+		t.Fatalf("expected initial connection")
+	}
+
+	// 2. 강제 단절 유발
+	server.ForceDisconnect()
+
+	// 3. 재연결 대기 (재연결 시도 시 attempt=0 이 적용되어 초기 interval 로 즉시 재연결됨)
+	deadline = time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if server.HelloCount() >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if server.HelloCount() < 2 {
+		t.Fatalf("expected reconnected HELLO handshake, got %d", server.HelloCount())
+	}
+}
+

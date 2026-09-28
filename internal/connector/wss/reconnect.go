@@ -144,7 +144,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 
 		// 단일 세션 실행 (Dial -> Hello -> Heartbeat & Listen)
-		err := s.runSession(ctx, client)
+		connected, err := s.runSession(ctx, client)
 		_ = client.Close()
 
 		s.mu.Lock()
@@ -168,6 +168,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			onDisc(err)
 		}
 
+		// 정상 연결/핸드셰이크가 확립되었던 세션이 종료된 것이라면 backoff attempt 초기화 (팀장님 리뷰 4번)
+		if connected {
+			attempt = 0
+		}
+
 		// 지수 백오프 + Jitter 대기
 		backoffDur := s.backoff.NextBackoff(attempt)
 		attempt++
@@ -180,19 +185,19 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Supervisor) runSession(ctx context.Context, client *Client) error {
+func (s *Supervisor) runSession(ctx context.Context, client *Client) (bool, error) {
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
 
 	// 1. Dial (WSS 연결 + Bearer 인증 + ReadLimit 설정)
 	if err := client.Dial(sessionCtx); err != nil {
-		return fmt.Errorf("dial failed: %w", err)
+		return false, fmt.Errorf("dial failed: %w", err)
 	}
 
 	// 2. HELLO 핸드셰이크
 	helloAck, err := client.SendHello(sessionCtx)
 	if err != nil {
-		return fmt.Errorf("hello handshake failed: %w", err)
+		return false, fmt.Errorf("hello handshake failed: %w", err)
 	}
 
 	s.mu.RLock()
@@ -223,19 +228,19 @@ func (s *Supervisor) runSession(ctx context.Context, client *Client) error {
 		}()
 	}
 
-	// 5. 단절 또는 에러 대기
+	// 5. 단절 또는 에러 대기 (정상 연결 확립 상태이므로 connected=true 반환)
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return true, ctx.Err()
 	case err := <-hbErrCh:
 		if err != nil {
-			return fmt.Errorf("heartbeat runner failed: %w", err)
+			return true, fmt.Errorf("heartbeat runner failed: %w", err)
 		}
-		return nil
+		return true, nil
 	case err := <-readErrCh:
 		if err != nil {
-			return fmt.Errorf("read loop failed: %w", err)
+			return true, fmt.Errorf("read loop failed: %w", err)
 		}
-		return nil
+		return true, nil
 	}
 }

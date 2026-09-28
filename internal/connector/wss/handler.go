@@ -30,6 +30,7 @@ type Handler struct {
 	mu       sync.RWMutex
 	provider provider.Provider
 	sender   MessageSender
+	onError  func(err error)
 }
 
 // NewHandler 는 새 Control WSS 메시지 핸들러를 생성합니다.
@@ -52,6 +53,20 @@ func (h *Handler) Sender() MessageSender {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.sender
+}
+
+// SetOnError 는 메시지 수신/처리 중 에러 발생 시 호출될 콜백을 설정합니다.
+func (h *Handler) SetOnError(cb func(err error)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onError = cb
+}
+
+// OnError 는 현재 설정된 에러 콜백을 반환합니다.
+func (h *Handler) OnError() func(err error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.onError
 }
 
 // HandleMessage 는 수신된 raw JSON 메시지를 Envelope 기준으로 판별하여 적절한 처리기로 분기합니다.
@@ -165,17 +180,19 @@ func validateOperationCommand(cmd *protocol.OperationCommandMessage) error {
 		}
 
 	case protocol.MutationTypeCleanup:
-		if cmd.Payload.ProviderResources != nil {
-			for i, r := range cmd.Payload.ProviderResources {
-				if r.ResourceType == "" {
-					return fmt.Errorf("resourceType is required for cleanup provider resource at index %d", i)
-				}
-				if r.ProviderID == "" {
-					return fmt.Errorf("providerId is required for cleanup provider resource at index %d", i)
-				}
-				if r.Generation < 1 {
-					return fmt.Errorf("generation must be >= 1 for cleanup provider resource at index %d", i)
-				}
+		// CLEANUP 시 providerResources 필수 검증 (팀장님 리뷰 1번)
+		if cmd.Payload.ProviderResources == nil {
+			return fmt.Errorf("providerResources is required for CLEANUP")
+		}
+		for i, r := range cmd.Payload.ProviderResources {
+			if r.ResourceType == "" {
+				return fmt.Errorf("resourceType is required for cleanup provider resource at index %d", i)
+			}
+			if r.ProviderID == "" {
+				return fmt.Errorf("providerId is required for cleanup provider resource at index %d", i)
+			}
+			if r.Generation < 1 {
+				return fmt.Errorf("generation must be >= 1 for cleanup provider resource at index %d", i)
 			}
 		}
 
@@ -195,28 +212,52 @@ func (h *Handler) handleOperationCommand(ctx context.Context, env protocol.BaseE
 	// 1. Wire Validation (Envelope 및 Payload 스키마 필수값 엄격 검증)
 	if valErr := validateOperationCommand(&cmdMsg); valErr != nil {
 		if sender := h.Sender(); sender != nil && cmdMsg.MessageID != "" {
-			ackErr := protocol.OperationAckMessage{
-				BaseEnvelope: protocol.BaseEnvelope{
-					Type:             protocol.MessageTypeOperationAck,
-					MessageID:        generateUUID(),
-					ReplyToMessageID: cmdMsg.MessageID,
-					SentAt:           time.Now().UTC(),
-					RequestID:        cmdMsg.RequestID,
-					OperationID:      cmdMsg.OperationID,
-					LabInstanceID:    cmdMsg.LabInstanceID,
-					Generation:       cmdMsg.Generation,
-					TraceParent:      cmdMsg.TraceParent,
-					TraceState:       cmdMsg.TraceState,
-				},
-				Payload: protocol.OperationAckPayload{
-					Accepted: false,
-					Error: &protocol.SafeError{
-						Code:    "INVALID_COMMAND",
-						Message: valErr.Error(),
+			hasCorrelation := cmdMsg.OperationID != "" && cmdMsg.LabInstanceID != "" && cmdMsg.Generation >= 1
+			if !hasCorrelation {
+				// Correlation 누락 시 OPERATION_ACK 스키마 필수 조건(operationId, labInstanceId, generation)을
+				// 만족할 수 없으므로 올바른 Protocol Error(ERROR) 메시지로 회신 (팀장님 리뷰 2번)
+				protoErr := protocol.ProtocolErrorMessage{
+					BaseEnvelope: protocol.BaseEnvelope{
+						Type:             protocol.MessageTypeError,
+						MessageID:        generateUUID(),
+						ReplyToMessageID: cmdMsg.MessageID,
+						SentAt:           time.Now().UTC(),
+						RequestID:        cmdMsg.RequestID,
+						TraceParent:      cmdMsg.TraceParent,
+						TraceState:       cmdMsg.TraceState,
 					},
-				},
+					Payload: protocol.ProtocolErrorPayload{
+						Code:    "INVALID_MESSAGE",
+						Message: valErr.Error(),
+						Fatal:   false,
+					},
+				}
+				_ = sender.SendMessage(ctx, protoErr)
+			} else {
+				// Correlation 은 정상이지만 Payload 스키마 유효성 검증 실패 시 OPERATION_ACK(accepted: false) 회신
+				ackErr := protocol.OperationAckMessage{
+					BaseEnvelope: protocol.BaseEnvelope{
+						Type:             protocol.MessageTypeOperationAck,
+						MessageID:        generateUUID(),
+						ReplyToMessageID: cmdMsg.MessageID,
+						SentAt:           time.Now().UTC(),
+						RequestID:        cmdMsg.RequestID,
+						OperationID:      cmdMsg.OperationID,
+						LabInstanceID:    cmdMsg.LabInstanceID,
+						Generation:       cmdMsg.Generation,
+						TraceParent:      cmdMsg.TraceParent,
+						TraceState:       cmdMsg.TraceState,
+					},
+					Payload: protocol.OperationAckPayload{
+						Accepted: false,
+						Error: &protocol.SafeError{
+							Code:    "INVALID_COMMAND",
+							Message: valErr.Error(),
+						},
+					},
+				}
+				_ = sender.SendMessage(ctx, ackErr)
 			}
-			_ = sender.SendMessage(ctx, ackErr)
 		}
 		return fmt.Errorf("invalid operation command: %w", valErr)
 	}
@@ -375,6 +416,10 @@ func validateReconcileRequest(req *protocol.ReconcileRequestMessage) error {
 	if req.Generation < 1 {
 		return fmt.Errorf("invalid generation in envelope: must be >= 1, got %d", req.Generation)
 	}
+	// knownResources 필수 검증 (팀장님 리뷰 3번)
+	if req.Payload.KnownResources == nil {
+		return fmt.Errorf("knownResources is required in payload")
+	}
 	for i, r := range req.Payload.KnownResources {
 		if r.ResourceType == "" {
 			return fmt.Errorf("resourceType is required in knownResources at index %d", i)
@@ -397,29 +442,51 @@ func (h *Handler) handleReconcileRequest(ctx context.Context, env protocol.BaseE
 
 	// 1. Wire Validation (Correlation 및 knownResources 필수값 검증)
 	if valErr := validateReconcileRequest(&reqMsg); valErr != nil {
-		if sender := h.Sender(); sender != nil && reqMsg.MessageID != "" && reqMsg.OperationID != "" && reqMsg.LabInstanceID != "" && reqMsg.Generation >= 1 {
-			errRes := protocol.ReconcileResultMessage{
-				BaseEnvelope: protocol.BaseEnvelope{
-					Type:             protocol.MessageTypeReconcileResult,
-					MessageID:        generateUUID(),
-					ReplyToMessageID: reqMsg.MessageID,
-					SentAt:           time.Now().UTC(),
-					RequestID:        reqMsg.RequestID,
-					OperationID:      reqMsg.OperationID,
-					LabInstanceID:    reqMsg.LabInstanceID,
-					Generation:       reqMsg.Generation,
-					TraceParent:      reqMsg.TraceParent,
-					TraceState:       reqMsg.TraceState,
-				},
-				Payload: protocol.ReconcileResultPayload{
-					Observations: []protocol.ResourceObservation{},
-					Error: &protocol.SafeError{
-						Code:    "INVALID_REQUEST",
-						Message: valErr.Error(),
+		if sender := h.Sender(); sender != nil && reqMsg.MessageID != "" {
+			hasCorrelation := reqMsg.OperationID != "" && reqMsg.LabInstanceID != "" && reqMsg.Generation >= 1
+			if !hasCorrelation {
+				// Correlation 누락 시 RECONCILE_RESULT 대신 올바른 Protocol Error(ERROR) 메시지로 회신
+				protoErr := protocol.ProtocolErrorMessage{
+					BaseEnvelope: protocol.BaseEnvelope{
+						Type:             protocol.MessageTypeError,
+						MessageID:        generateUUID(),
+						ReplyToMessageID: reqMsg.MessageID,
+						SentAt:           time.Now().UTC(),
+						RequestID:        reqMsg.RequestID,
+						TraceParent:      reqMsg.TraceParent,
+						TraceState:       reqMsg.TraceState,
 					},
-				},
+					Payload: protocol.ProtocolErrorPayload{
+						Code:    "INVALID_MESSAGE",
+						Message: valErr.Error(),
+						Fatal:   false,
+					},
+				}
+				_ = sender.SendMessage(ctx, protoErr)
+			} else {
+				errRes := protocol.ReconcileResultMessage{
+					BaseEnvelope: protocol.BaseEnvelope{
+						Type:             protocol.MessageTypeReconcileResult,
+						MessageID:        generateUUID(),
+						ReplyToMessageID: reqMsg.MessageID,
+						SentAt:           time.Now().UTC(),
+						RequestID:        reqMsg.RequestID,
+						OperationID:      reqMsg.OperationID,
+						LabInstanceID:    reqMsg.LabInstanceID,
+						Generation:       reqMsg.Generation,
+						TraceParent:      reqMsg.TraceParent,
+						TraceState:       reqMsg.TraceState,
+					},
+					Payload: protocol.ReconcileResultPayload{
+						Observations: []protocol.ResourceObservation{},
+						Error: &protocol.SafeError{
+							Code:    "INVALID_REQUEST",
+							Message: valErr.Error(),
+						},
+					},
+				}
+				_ = sender.SendMessage(ctx, errRes)
 			}
-			_ = sender.SendMessage(ctx, errRes)
 		}
 		return fmt.Errorf("invalid reconcile request: %w", valErr)
 	}
@@ -518,7 +585,15 @@ func (h *Handler) Listen(ctx context.Context, conn *websocket.Conn) error {
 			if err != nil {
 				return err
 			}
-			_ = h.HandleMessage(ctx, msg)
+			// HandleMessage 에러를 무시하지 않고 등록된 onError 콜백으로 전달 (팀장님 리뷰 6번)
+			if handleErr := h.HandleMessage(ctx, msg); handleErr != nil {
+				h.mu.RLock()
+				onErr := h.onError
+				h.mu.RUnlock()
+				if onErr != nil {
+					onErr(handleErr)
+				}
+			}
 		}
 	}
 }
