@@ -26,6 +26,7 @@ export function LoginPage() {
       return api.getMe()
     },
     onSuccess: (me) => {
+      queryClient.removeQueries()
       queryClient.setQueryData(labbitQueryKeys.me, me)
 
       const destination = isSafeInternalPath(state?.from) ? state.from : '/classes'
