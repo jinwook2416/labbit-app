@@ -2,6 +2,7 @@ package mock
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,8 +24,10 @@ type MockSaaS struct {
 	ExpectedToken   string
 	OnHelloReceived func(raw []byte)
 	OnMsgReceived   func(raw []byte)
+	OnConnected     func(conn *websocket.Conn)
 
 	mu       sync.Mutex
+	writeMu  sync.Mutex
 	conn     *websocket.Conn
 	received [][]byte
 }
@@ -46,10 +49,15 @@ func NewMockSaaS(expectedToken string) *MockSaaS {
 // Close 는 Mock 서버를 종료합니다.
 func (m *MockSaaS) Close() {
 	m.mu.Lock()
-	if m.conn != nil {
-		_ = m.conn.Close()
-	}
+	conn := m.conn
+	m.conn = nil
 	m.mu.Unlock()
+
+	if conn != nil {
+		m.writeMu.Lock()
+		_ = conn.Close()
+		m.writeMu.Unlock()
+	}
 	m.Server.Close()
 }
 
@@ -77,9 +85,21 @@ func (m *MockSaaS) handleControlWSS(w http.ResponseWriter, r *http.Request) {
 
 	m.mu.Lock()
 	m.conn = c
+	onConnected := m.OnConnected
 	m.mu.Unlock()
 
-	defer c.Close()
+	if onConnected != nil {
+		onConnected(c)
+	}
+
+	defer func() {
+		m.mu.Lock()
+		if m.conn == c {
+			m.conn = nil
+		}
+		m.mu.Unlock()
+		_ = c.Close()
+	}()
 
 	for {
 		_, message, err := c.ReadMessage()
@@ -108,6 +128,25 @@ func (m *MockSaaS) handleControlWSS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeMessageTo 는 지정한 WebSocket 연결에 writeMu 락으로 보호하여 직렬화 쓰기를 수행합니다.
+func (m *MockSaaS) writeMessageTo(c *websocket.Conn, messageType int, data []byte) error {
+	if c == nil {
+		return fmt.Errorf("mock saas: websocket connection is not established or closed")
+	}
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	return c.WriteMessage(messageType, data)
+}
+
+// writeMessage 는 현재 활성 WebSocket 연결(m.conn)에 writeMu 락으로 보호하여 직렬화 쓰기를 수행합니다.
+func (m *MockSaaS) writeMessage(messageType int, data []byte) error {
+	m.mu.Lock()
+	conn := m.conn
+	m.mu.Unlock()
+
+	return m.writeMessageTo(conn, messageType, data)
+}
+
 func (m *MockSaaS) sendHelloAck(c *websocket.Conn, replyTo string) {
 	ack := map[string]interface{}{
 		"type":             protocol.MessageTypeHelloAck,
@@ -121,36 +160,30 @@ func (m *MockSaaS) sendHelloAck(c *websocket.Conn, replyTo string) {
 		},
 	}
 	bytes, _ := json.Marshal(ack)
-	_ = c.WriteMessage(websocket.TextMessage, bytes)
+	_ = m.writeMessageTo(c, websocket.TextMessage, bytes)
 }
 
 // SendCommand 는 모의 SaaS에서 Connector로 OperationCommand를 전송합니다.
 func (m *MockSaaS) SendCommand(cmd map[string]interface{}) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	bytes, err := json.Marshal(cmd)
 	if err != nil {
 		return err
 	}
-	return m.conn.WriteMessage(websocket.TextMessage, bytes)
+	return m.writeMessage(websocket.TextMessage, bytes)
 }
 
 // SendRaw 는 모의 SaaS에서 임의의 구조체 메시지를 JSON 직렬화하여 전송합니다.
 func (m *MockSaaS) SendRaw(msg interface{}) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	bytes, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	return m.conn.WriteMessage(websocket.TextMessage, bytes)
+	return m.writeMessage(websocket.TextMessage, bytes)
 }
 
 // SendBytes 는 모의 SaaS에서 바이트 슬라이스를 가공 없이 직접 WebSocket으로 전송합니다.
 func (m *MockSaaS) SendBytes(raw []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.conn.WriteMessage(websocket.TextMessage, raw)
+	return m.writeMessage(websocket.TextMessage, raw)
 }
 
 // ReceivedMessages 는 지금까지 수신된 모든 원본 메시지 사본을 반환합니다.
@@ -160,4 +193,11 @@ func (m *MockSaaS) ReceivedMessages() [][]byte {
 	res := make([][]byte, len(m.received))
 	copy(res, m.received)
 	return res
+}
+
+// ActiveConn 은 현재 등록된 활성 WebSocket 연결을 반환합니다.
+func (m *MockSaaS) ActiveConn() *websocket.Conn {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conn
 }
