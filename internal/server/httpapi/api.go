@@ -13,12 +13,19 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/ktcloud4-SL/labbit-app/internal/observability"
 	"github.com/ktcloud4-SL/labbit-app/internal/server/auth"
 	"github.com/ktcloud4-SL/labbit-app/internal/server/class"
+	"github.com/ktcloud4-SL/labbit-app/internal/server/previewsession"
 	"github.com/ktcloud4-SL/labbit-app/internal/server/repository"
+	"github.com/ktcloud4-SL/labbit-app/internal/server/terminal"
+	"github.com/ktcloud4-SL/labbit-app/internal/server/workspacefile"
 )
 
 // maxLoginBodyBytes는 Login 요청 body 상한이다. Argon2id에 과도하게 긴 입력이 전달되지 않게 한다.
@@ -41,17 +48,32 @@ type Classes interface {
 type Options struct {
 	Auth    Authenticator
 	Classes Classes
+	// Terminals가 nil이면 Terminal Relay가 없는 구성으로 보고 Terminal target 조회와 TerminalSession 생성/종료를 503(terminal_unavailable)으로 응답한다.
+	Terminals Terminals
+	// Files가 nil이면 Workspace file use case가 없는 구성으로 보고 file Tree/Read/Save를 503(file_transport_unavailable)으로 응답한다.
+	Files Files
+	// Previews가 nil이면 Preview Gateway가 없는 구성으로 보고 PreviewSession 생성/종료를 503(preview_unavailable)으로 응답한다.
+	Previews Previews
+	// LiveSessions가 nil이면 Live Relay가 없는 구성으로 보고 LiveSession 생성/조회/종료를 503(live_unavailable)으로 응답한다.
+	LiveSessions LiveSessions
 	// PublicOrigin은 unsafe method의 trusted origin(LABBIT_PUBLIC_ORIGIN)이다. ParseOrigin 형식을 따른다.
 	PublicOrigin string
 	// Logger가 nil이면 로그를 남기지 않는다.
-	Logger *slog.Logger
+	Logger  *slog.Logger
+	Metrics *observability.HTTPMetrics
+	// Tracer는 HTTP request의 server Span을 만든다. nil이면 Span을 만들지 않지만(noop) 요청의 유효한 W3C Context는 handler로 전달한다.
+	Tracer trace.Tracer
 }
 
 type api struct {
-	auth    Authenticator
-	classes Classes
-	origin  string
-	logger  *slog.Logger
+	auth         Authenticator
+	classes      Classes
+	terminals    Terminals
+	files        Files
+	previews     Previews
+	liveSessions LiveSessions
+	origin       string
+	logger       *slog.Logger
 }
 
 // New는 /api/v1 아래 Auth와 Class endpoint를 제공하는 http.Handler를 만든다.
@@ -71,15 +93,57 @@ func New(opts Options) (http.Handler, error) {
 		logger = slog.New(slog.DiscardHandler)
 	}
 
-	a := &api{auth: opts.Auth, classes: opts.Classes, origin: origin, logger: logger}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/v1/auth/login", a.login)
-	mux.Handle("POST /api/v1/auth/logout", a.authenticated(http.HandlerFunc(a.logout)))
-	mux.Handle("GET /api/v1/me", a.authenticated(http.HandlerFunc(a.me)))
-	mux.Handle("GET /api/v1/classes", a.authenticated(http.HandlerFunc(a.listClasses)))
-	mux.Handle("GET /api/v1/classes/{classId}", a.authenticated(http.HandlerFunc(a.getClass)))
+	terminals := opts.Terminals
+	if terminals == nil {
+		terminals = unavailableTerminals{}
+	}
 
-	return withRequestID(noStore(a.originGuard(mux))), nil
+	files := opts.Files
+	if files == nil {
+		files = unavailableFiles{}
+	}
+
+	previews := opts.Previews
+	if previews == nil {
+		previews = unavailablePreviews{}
+	}
+
+	liveSessions := opts.LiveSessions
+	if liveSessions == nil {
+		liveSessions = unavailableLiveSessions{}
+	}
+
+	a := &api{auth: opts.Auth, classes: opts.Classes, terminals: terminals, files: files, previews: previews, liveSessions: liveSessions, origin: origin, logger: logger}
+	mux := http.NewServeMux()
+	routes := make(map[string]string)
+	handle := func(pattern string, handler http.Handler) {
+		mux.Handle(pattern, handler)
+		_, route, _ := strings.Cut(pattern, " ")
+		routes[pattern] = route
+	}
+	handle("POST /api/v1/auth/login", http.HandlerFunc(a.login))
+	handle("POST /api/v1/auth/logout", a.authenticated(http.HandlerFunc(a.logout)))
+	handle("GET /api/v1/me", a.authenticated(http.HandlerFunc(a.me)))
+	handle("GET /api/v1/classes", a.authenticated(http.HandlerFunc(a.listClasses)))
+	handle("GET /api/v1/classes/{classId}", a.authenticated(http.HandlerFunc(a.getClass)))
+	handle("GET /api/v1/lab-instances/{labInstanceId}/terminal-targets", a.authenticated(http.HandlerFunc(a.listTerminalTargets)))
+	handle("POST /api/v1/lab-instances/{labInstanceId}/terminal-sessions", a.authenticated(http.HandlerFunc(a.createTerminalSession)))
+	handle("DELETE /api/v1/terminal-sessions/{terminalSessionId}", a.authenticated(http.HandlerFunc(a.closeTerminalSession)))
+	handle("GET /api/v1/lab-instances/{labInstanceId}/files/tree", a.authenticated(http.HandlerFunc(a.listWorkspaceFiles)))
+	handle("GET /api/v1/lab-instances/{labInstanceId}/files/content", a.authenticated(http.HandlerFunc(a.readWorkspaceFile)))
+	handle("PUT /api/v1/lab-instances/{labInstanceId}/files/content", a.authenticated(http.HandlerFunc(a.saveWorkspaceFile)))
+	handle("POST /api/v1/lab-instances/{labInstanceId}/preview-sessions", a.authenticated(http.HandlerFunc(a.createPreviewSession)))
+	handle("DELETE /api/v1/preview-sessions/{previewSessionId}", a.authenticated(http.HandlerFunc(a.closePreviewSession)))
+	handle("POST /api/v1/terminal-sessions/{terminalSessionId}/live-sessions", a.authenticated(http.HandlerFunc(a.createLiveSession)))
+	handle("GET /api/v1/classes/{classId}/live-session", a.authenticated(http.HandlerFunc(a.getActiveLiveSession)))
+	handle("DELETE /api/v1/live-sessions/{liveSessionId}", a.authenticated(http.HandlerFunc(a.closeLiveSession)))
+
+	tracer := opts.Tracer
+	if tracer == nil {
+		tracer = noop.NewTracerProvider().Tracer("")
+	}
+	// Span은 request ID를 attribute로 갖도록 withRequestID 안쪽에서 시작한다. Origin 거절도 Span 안이다.
+	return withMetrics(opts.Metrics, mux, routes, withRequestID(withTracing(tracer, mux, routes, noStore(a.originGuard(mux))))), nil
 }
 
 // noStore는 인증 응답이 Browser나 중간 cache에 저장되지 않게 한다.
@@ -147,6 +211,8 @@ func (a *api) unauthenticated(w http.ResponseWriter, r *http.Request, clearCooki
 // driver/PostgreSQL 원문이나 credential이 들어 있을 수 있다.
 func (a *api) internalError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	attrs := append([]any{"request_id", requestIDFrom(r.Context()), "operation", op}, errorClassification(err)...)
+	// 유효한 Span이 있으면 같은 요청의 request_id와 trace_id를 함께 조사할 수 있다. 없으면 trace_id를 만들지 않는다.
+	attrs = append(attrs, traceLogAttrs(r.Context())...)
 	a.logger.Error("HTTP 요청 처리 실패", attrs...)
 	writeProblem(w, r, http.StatusInternalServerError, codeInternal, "요청을 처리하지 못했습니다.")
 }
@@ -167,7 +233,8 @@ func errorClassification(err error) []any {
 		return attrs
 	case errors.Is(err, auth.ErrMalformedPasswordHash):
 		return []any{"error_kind", "unusable_password_hash"}
-	case errors.Is(err, class.ErrInconsistentData):
+	case errors.Is(err, class.ErrInconsistentData), errors.Is(err, terminal.ErrInconsistentData), errors.Is(err, workspacefile.ErrInconsistentData),
+		errors.Is(err, previewsession.ErrInconsistentData):
 		return []any{"error_kind", "inconsistent_data"}
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return []any{"error_kind", "context"}
