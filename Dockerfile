@@ -1,9 +1,10 @@
 # 1. 빌드 스테이지
-FROM golang:1.24-alpine AS builder
+FROM golang:alpine AS builder
 
 ENV CGO_ENABLED=0 \
     GOOS=linux \
-    GOARCH=amd64
+    GOARCH=amd64 \
+    GOTOOLCHAIN=auto
 
 WORKDIR /app
 
