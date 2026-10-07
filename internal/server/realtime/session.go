@@ -37,6 +37,7 @@ type session struct {
 	data            *dataConn
 	dataBoundBefore bool
 	browser         *browserConn
+	liveSession     *liveSession
 	attachedBefore  bool
 	grace           Timer
 	// graceEpoch는 timer를 새로 걸거나 취소할 때마다 증가한다. 이미 만료되어 실행 대기 중인 callback이 그 사이에
@@ -89,6 +90,11 @@ func (b *browserConn) close(code int, reason string, flush bool) {
 	b.cancel()
 }
 
+func (b *browserConn) closeWithFinalMessage(kind int, data []byte, code int, reason string) {
+	b.p.closeWithFinalMessage(kind, data, code, reason)
+	b.cancel()
+}
+
 // dataConn은 Connector의 Terminal Data WSS connection 하나다.
 //
 // Upgrade 직후(attach 전)에 만들어 dataTrust에 등록한다. 그래서 TERMINAL_DATA_ATTACH를 기다리는 connection도 revoke 대상이다.
@@ -105,4 +111,39 @@ type dataConn struct {
 	revoked atomic.Bool
 	// session은 bind를 시도한 TerminalSession이다. revoke가 그 세션의 data channel에서 이 connection을 내릴 때 쓴다.
 	session atomic.Pointer[session]
+}
+
+// liveSession은 Class 내 active LiveSession 하나의 ephemeral 상태다.
+type liveSession struct {
+	id                      string
+	sourceTerminalSessionID string
+	classID                 string
+	log                     *slog.Logger
+
+	mu          sync.Mutex
+	subscribers map[*liveSubscriber]struct{}
+	ended       bool
+}
+
+// liveSubscriber는 LiveSession을 구독 중인 학생 Browser WSS connection 하나다.
+type liveSubscriber struct {
+	p      *peer
+	log    *slog.Logger
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func newLiveSubscriber(p *peer, log *slog.Logger) *liveSubscriber {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &liveSubscriber{p: p, log: log, ctx: ctx, cancel: cancel}
+}
+
+func (s *liveSubscriber) close(code int, reason string, flush bool) {
+	s.p.close(code, reason, flush)
+	s.cancel()
+}
+
+func (s *liveSubscriber) closeWithFinalMessage(kind int, data []byte, code int, reason string) {
+	s.p.closeWithFinalMessage(kind, data, code, reason)
+	s.cancel()
 }
